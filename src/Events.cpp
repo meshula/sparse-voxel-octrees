@@ -32,8 +32,8 @@ static int mouseXSpeed = 0;
 static int mouseYSpeed = 0;
 static int mouseZSpeed = 0;
 static int mouseDown[] = {0, 0};
-static char keyHit[SDLK_LAST];
-static char keyDown[SDLK_LAST];
+static char keyHit[SDL_NUM_SCANCODES] = {0};
+static char keyDown[SDL_NUM_SCANCODES] = {0};
 
 static void processEvent(SDL_Event event) {
     switch (event.type) {
@@ -42,37 +42,40 @@ static void processEvent(SDL_Event event) {
             mouseY = event.motion.y;
             mouseXSpeed = event.motion.xrel;
             mouseYSpeed = event.motion.yrel;
-
             break;
+
+        case SDL_MOUSEWHEEL:
+            mouseZSpeed = event.wheel.y;
+            mouseZ += event.wheel.y;
+            break;
+
         case SDL_MOUSEBUTTONDOWN:
-            if (event.button.button == SDL_BUTTON_WHEELUP) {
-                mouseZSpeed = 1;
-                mouseZ     += 1;
-            } else if(event.button.button == SDL_BUTTON_WHEELDOWN) {
-                mouseZSpeed = -1;
-                mouseZ     -=  1;
-            } else if (event.button.button == SDL_BUTTON_LEFT)
+            if (event.button.button == SDL_BUTTON_LEFT)
                 mouseDown[0] = 1;
             else if (event.button.button == SDL_BUTTON_RIGHT)
                 mouseDown[1] = 1;
-
             break;
+
         case SDL_MOUSEBUTTONUP:
             if (event.button.button == SDL_BUTTON_LEFT)
                 mouseDown[0] = 0;
             else if (event.button.button == SDL_BUTTON_RIGHT)
                 mouseDown[1] = 0;
-
             break;
+
         case SDL_KEYDOWN:
-            keyHit[event.key.keysym.sym] = 1;
-            keyDown[event.key.keysym.sym] = 1;
-
+            if (event.key.keysym.scancode < SDL_NUM_SCANCODES) {
+                keyHit[event.key.keysym.scancode] = 1;
+                keyDown[event.key.keysym.scancode] = 1;
+            }
             break;
+
         case SDL_KEYUP:
-            keyDown[event.key.keysym.sym] = 0;
-
+            if (event.key.keysym.scancode < SDL_NUM_SCANCODES) {
+                keyDown[event.key.keysym.scancode] = 0;
+            }
             break;
+
         case SDL_QUIT:
             exit(0);
     }

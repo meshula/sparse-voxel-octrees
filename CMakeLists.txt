@@ -1,19 +1,10 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.26)
 project(sparse-voxel-octrees)
 
 set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
 
-include(CXX11)
-check_for_cxx11_compiler(CXX11_COMPILER)
-
-if(CXX11_COMPILER)
-    enable_cxx11()
-else()
-    message(FATAL_ERROR "The compiler ${CMAKE_CXX_COMPILER} seems to have no C++11 support. Please try again with a more recent compiler version.")
-endif()
-
-include(OptimizeForArchitecture)
-OptimizeForArchitecture()
+# set C++11
+set(CMAKE_CXX_STANDARD 11)
 
 if (MSVC)
     add_definitions(-DNOMINMAX -D_CRT_SECURE_NO_WARNINGS)
@@ -26,13 +17,12 @@ if (CMAKE_COMPILER_IS_GNUCXX)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX_WARNINGS} -fvisibility-inlines-hidden")
 endif()
 
-find_package(SDL REQUIRED)
+find_package(SDL2 REQUIRED)
 
-include_directories(src ${SDL_INCLUDE_DIR})
 file(GLOB_RECURSE Sources "src/*.hpp" "src/*.cpp" "src/*.c")
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    set(Sources ${Sources} "src/SDLMain.m")
+    #set(Sources ${Sources} "src/SDLMain.m")
 endif()
 
 if (WIN32)
@@ -40,7 +30,19 @@ if (WIN32)
 else()
     add_executable(sparse-voxel-octrees ${Sources})
 endif()
-target_link_libraries(sparse-voxel-octrees ${SDLMAIN_LIBRARY} ${SDL_LIBRARY})
+
+# on Apple, we need to link against Cocoa
+if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    # find Cocoa
+    find_library(COCOA_LIBRARY Cocoa)
+    target_link_libraries(sparse-voxel-octrees PRIVATE ${COCOA_LIBRARY})
+    endif()
+
+target_include_directories(sparse-voxel-octrees PRIVATE ${SDL2_INCLUDE_DIRS})
+target_include_directories(sparse-voxel-octrees PRIVATE src)
+target_link_libraries(sparse-voxel-octrees PRIVATE ${SDL2_LIBRARIES})
+
+
 
 set_target_properties(sparse-voxel-octrees PROPERTIES RUNTIME_OUTPUT_DIRECTORY_RELEASE ${PROJECT_SOURCE_DIR}/bin)
 set_target_properties(sparse-voxel-octrees PROPERTIES RUNTIME_OUTPUT_DIRECTORY_DEBUG ${PROJECT_SOURCE_DIR}/bin)

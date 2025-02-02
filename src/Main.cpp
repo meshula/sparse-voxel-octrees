@@ -21,6 +21,7 @@ freely, subject to the following restrictions:
    distribution.
 */
 
+#define SDL_MAIN_HANDLED
 
 #include "ThreadBarrier.hpp"
 #include "VoxelOctree.hpp"
@@ -62,8 +63,12 @@ static const int GHeight = 720;
 static const float AspectRatio = GHeight/(float)GWidth;
 static const int TileSize = 8;
 
-static SDL_Surface *backBuffer;
+static SDL_Window *window;
+static SDL_Renderer *renderer;
+static SDL_Texture *renderTexture;
+static uint32_t *pixelBuffer;
 static ThreadBarrier *barrier;
+static SDL_mutex *renderMutex;
 
 static std::atomic<bool> doTerminate;
 static std::atomic<bool> renderHalfSize;
@@ -91,8 +96,7 @@ Vec3 shade(int intNormal, const Vec3 &ray, const Vec3 &light) {
 
 void renderTile(int x0, int y0, int x1, int y1, int stride, float scale, float zx, float zy, float zz,
         const Mat4 &tform, const Vec3 &light, VoxelOctree *tree, const Vec3 &pos, float minT) {
-    uint32 *buffer  = (uint32 *)backBuffer->pixels;
-    int pitch       = backBuffer->pitch;
+    int pitch = GWidth;
 
     float dy = AspectRatio - y0*scale;
     for (int y = y0; y < y1; ++y, dy -= scale) {
@@ -101,7 +105,7 @@ void renderTile(int x0, int y0, int x1, int y1, int stride, float scale, float z
             int cornerX = x - ((x - x0) % stride);
             int cornerY = y - ((y - y0) % stride);
             if (cornerX != x || cornerY != y) {
-                buffer[x + y*pitch/4] = buffer[cornerX + cornerY*pitch/4];
+                pixelBuffer[x + y*pitch] = pixelBuffer[cornerX + cornerY*pitch];
                 continue;
             }
 
@@ -131,7 +135,7 @@ void renderTile(int x0, int y0, int x1, int y1, int stride, float scale, float z
                 (uint32(std::min(col.z, 1.0f)*255.0) << 16) |
                 0xFF000000u;
 #endif
-            buffer[x + y*pitch/4] = color;
+            pixelBuffer[x + y*pitch] = color;
         }
     }
 }
@@ -162,7 +166,7 @@ void renderBatch(BatchData *data) {
 
     Vec3 light = (tform*Vec3(-1.0, 1.0, -1.0)).normalize();
 
-    std::memset((uint8 *)backBuffer->pixels + y0*backBuffer->pitch, 0, (y1 - y0)*backBuffer->pitch);
+    std::memset(pixelBuffer + y0*GWidth, 0, (y1 - y0)*GWidth * sizeof(uint32_t));
 
     float dy = AspectRatio - y0*scale;
     for (int y = 0, idx = 0; y < tilesY; y++, dy -= tileScale) {
@@ -219,10 +223,12 @@ int renderLoop(void *threadData) {
         barrier->waitPost();
 
         if (data->id == 0) {
-            if (SDL_MUSTLOCK(backBuffer))
-                SDL_UnlockSurface(backBuffer);
-
-            SDL_UpdateRect(backBuffer, 0, 0, 0, 0);
+            SDL_LockMutex(renderMutex);
+            SDL_UpdateTexture(renderTexture, NULL, pixelBuffer, GWidth * sizeof(uint32_t));
+            SDL_RenderClear(renderer);
+            SDL_RenderCopy(renderer, renderTexture, NULL, NULL);
+            SDL_RenderPresent(renderer);
+            SDL_UnlockMutex(renderMutex);
 
             int event;
             while ((event = waitEvent()) && (event == SDL_MOUSEMOTION && !getMouseDown(0) && !getMouseDown(1)));
@@ -253,8 +259,6 @@ int renderLoop(void *threadData) {
                 renderHalfSize = false;
             }
 
-            if (SDL_MUSTLOCK(backBuffer))
-                SDL_LockSurface(backBuffer);
         }
     }
 
@@ -334,10 +338,39 @@ int main(int argc, char *argv[]) {
 
         timer.bench("Octree initialization took");
 
-        SDL_Init(SDL_INIT_VIDEO);
+        if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+            std::cerr << "SDL initialization failed: " << SDL_GetError() << std::endl;
+            return 1;
+        }
 
-        SDL_WM_SetCaption("Sparse Voxel Octrees", "Sparse Voxel Octrees");
-        backBuffer = SDL_SetVideoMode(GWidth, GHeight, 32, SDL_SWSURFACE);
+        window = SDL_CreateWindow("Sparse Voxel Octrees", 
+            SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+            GWidth, GHeight, SDL_WINDOW_SHOWN);
+        if (!window) {
+            std::cerr << "Window creation failed: " << SDL_GetError() << std::endl;
+            return 1;
+        }
+
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+        if (!renderer) {
+            std::cerr << "Renderer creation failed: " << SDL_GetError() << std::endl;
+            SDL_DestroyWindow(window);
+            return 1;
+        }
+
+        renderTexture = SDL_CreateTexture(renderer,
+            SDL_PIXELFORMAT_ARGB8888,
+            SDL_TEXTUREACCESS_STREAMING,
+            GWidth, GHeight);
+        if (!renderTexture) {
+            std::cerr << "Texture creation failed: " << SDL_GetError() << std::endl;
+            SDL_DestroyRenderer(renderer);
+            SDL_DestroyWindow(window);
+            return 1;
+        }
+
+        renderMutex = SDL_CreateMutex();
+        pixelBuffer = new uint32_t[GWidth * GHeight];
 
         SDL_Thread *threads[NumThreads - 1];
         BatchData threadData[NumThreads];
@@ -345,8 +378,6 @@ int main(int argc, char *argv[]) {
         barrier = new ThreadBarrier(NumThreads);
         doTerminate = false;
 
-        if (SDL_MUSTLOCK(backBuffer))
-            SDL_LockSurface(backBuffer);
 
         int stride = (GHeight - 1) / NumThreads + 1;
         for (int i = 0; i < NumThreads; i++) {
@@ -362,16 +393,18 @@ int main(int argc, char *argv[]) {
         }
 
         for (int i = 1; i < NumThreads; i++)
-            threads[i - 1] = SDL_CreateThread(&renderLoop, (void *)&threadData[i]);
+            threads[i - 1] = SDL_CreateThread(&renderLoop, "RenderThread", (void *)&threadData[i]);
 
         renderLoop((void *)&threadData[0]);
 
         for (int i = 1; i < NumThreads; i++)
             SDL_WaitThread(threads[i - 1], 0);
 
-        if (SDL_MUSTLOCK(backBuffer))
-            SDL_UnlockSurface(backBuffer);
-
+        delete[] pixelBuffer;
+        SDL_DestroyMutex(renderMutex);
+        SDL_DestroyTexture(renderTexture);
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
         SDL_Quit();
     }
 
